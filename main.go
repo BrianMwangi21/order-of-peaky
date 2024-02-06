@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	"github.com/BrianMwangi21/order-of-peaky.git/utils"
+	"github.com/BrianMwangi21/order-of-peaky.git/localbook"
 )
 
 var (
@@ -17,7 +17,7 @@ func main() {
 		wg.Add(1)
 		go func(s string) {
 			defer wg.Done()
-			utils.Begin(s)
+			localbook.Begin(s)
 		}(symbol)
 	}
 

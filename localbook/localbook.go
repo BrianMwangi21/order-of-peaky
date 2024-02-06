@@ -1,21 +1,24 @@
-package utils
+package localbook
 
 import (
-	"encoding/json"
-	"io"
+	"fmt"
+	"log"
 	"math"
-	"net/http"
-	"strconv"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/adshao/go-binance/v2"
-	"github.com/adshao/go-binance/v2/common"
 )
 
-type DepthSnapshot struct {
-	LastUpdateId int64      `json:"lastUpdateId"`
-	Bids         [][]string `json:"bids"`
-	Asks         [][]string `json:"asks"`
+var (
+	peaky      *log.Logger
+	RUNTIME    = (15 * time.Minute)
+	TICKERTIME = (30 * time.Second)
+)
+
+func init() {
+	peaky = log.New(os.Stdout, "peaky:", log.LstdFlags)
 }
 
 type OrderBook struct {
@@ -38,6 +41,12 @@ func newOrderBook(symbol string, lastUpdateId int64) *OrderBook {
 	}
 }
 
+func (ob *OrderBook) wsErrorHandler(err error) {
+	if err != nil {
+		peaky.Fatalf("%s : WsDepthServe error: %v", ob.Symbol, err)
+	}
+}
+
 func (ob *OrderBook) wsDepthHander(event *binance.WsDepthEvent) {
 	if event.LastUpdateID <= ob.LastUpdateId {
 		return
@@ -46,12 +55,6 @@ func (ob *OrderBook) wsDepthHander(event *binance.WsDepthEvent) {
 	ob.eventsCounter += 1
 	peaky.Printf("%s : Processing Event: %d, Bids: %d, Asks: %d\n", ob.Symbol, event.LastUpdateID, len(event.Bids), len(event.Asks))
 	ob.updateOrderBook(event)
-}
-
-func (ob *OrderBook) wsErrorHandler(err error) {
-	if err != nil {
-		peaky.Fatalf("%s : WsDepthServe error: %v", ob.Symbol, err)
-	}
 }
 
 func (ob *OrderBook) updateOrderBook(event *binance.WsDepthEvent) {
@@ -124,38 +127,39 @@ func (ob *OrderBook) getSpread() (lowestAsk, highestBid, spread float64) {
 	return lowestAsk, highestBid, spread
 }
 
-func parsePriceLevel(pl []common.PriceLevel) (totalQuantity float64) {
-	for _, level := range pl {
-		totalQuantity += parseToFloat(level.Quantity)
-	}
-	return totalQuantity
-}
+func Begin(symbol string) {
+	snapshot := getDepthSnapshot(symbol)
+	ob := newOrderBook(symbol, snapshot.LastUpdateId)
 
-func parseToFloat(input string) (value float64) {
-	value, err := strconv.ParseFloat(input, 64)
-	if err != nil {
-		peaky.Fatalf("Error parsing to float: %v", err)
-	}
-	return value
-}
+	peaky.Printf("%s : Depth Snapshot lastUpdateId: %d\n", ob.Symbol, ob.LastUpdateId)
+	peaky.Printf("%s : Starting events capturing\n", ob.Symbol)
 
-func getDepthSnapshot(symbol string) DepthSnapshot {
-	var snapshot DepthSnapshot
-	resp, err := http.Get("https://api.binance.com/api/v3/depth?symbol=" + symbol + "&limit=5000")
-	if err != nil {
-		peaky.Fatalf("%s : Error fetching snapshot from API: %v", symbol, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		peaky.Fatalf("%s : Error reading response body: %v", symbol, err)
+	ob.doneC, ob.stopC, ob.wsErr = binance.WsDepthServe(symbol, ob.wsDepthHander, ob.wsErrorHandler)
+	if ob.wsErr != nil {
+		peaky.Fatalf("%s : Error launching WsDepthServe websocket: %v\n", ob.Symbol, ob.wsErr)
 	}
 
-	err = json.Unmarshal(body, &snapshot)
-	if err != nil {
-		peaky.Fatalf("%s : Error unmarshalling depth snapshot: %v", symbol, err)
-	}
+	ticker := time.NewTicker(TICKERTIME)
 
-	return snapshot
+	go func(ob *OrderBook) {
+		time.Sleep(RUNTIME)
+		ob.stopC <- struct{}{}
+	}(ob)
+
+	go func(ob *OrderBook) {
+		for {
+			select {
+			case <-ticker.C:
+				ob.displaySentiments()
+			case <-ob.stopC:
+				ticker.Stop()
+				return
+			}
+		}
+	}(ob)
+
+	<-ob.doneC
+
+	fmt.Fprintln(os.Stdout)
+	peaky.Printf("%s : Finished events capturing. Events processed: %d\n", ob.Symbol, ob.eventsCounter)
 }
