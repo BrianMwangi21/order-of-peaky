@@ -10,73 +10,48 @@ import (
 )
 
 var (
-	lastUpdateId  int64
-	doneC, stopC  chan struct{}
-	wsErr         error
-	peaky         *log.Logger
-	eventsCounter int
-	orderBook     *OrderBook
-	SYMBOL        string
-	RUNTIME       = (2 * time.Minute)
-	TICKERTIME    = (15 * time.Second)
+	peaky      *log.Logger
+	RUNTIME    = (2 * time.Minute)
+	TICKERTIME = (15 * time.Second)
 )
 
 func init() {
-	orderBook = newOrderBook()
 	peaky = log.New(os.Stdout, "peaky:", log.LstdFlags)
-	peaky.Println("Logger initialized")
-}
-
-func wsDepthHander(event *binance.WsDepthEvent) {
-	if event.LastUpdateID <= lastUpdateId {
-		return
-	}
-
-	eventsCounter += 1
-	peaky.Printf("%s : Processing Event: %d, Bids: %d, Asks: %d\n", SYMBOL, event.LastUpdateID, len(event.Bids), len(event.Asks))
-	orderBook.updateOrderBook(event)
-}
-
-func wsErrorHandler(err error) {
-	if err != nil {
-		peaky.Fatalf("%s : WsDepthServe error: %v", SYMBOL, err)
-	}
 }
 
 func Begin(symbol string) {
-	SYMBOL = symbol
-	snapshot := getDepthSnapshot()
-	lastUpdateId = snapshot.LastUpdateId
+	snapshot := getDepthSnapshot(symbol)
+	ob := newOrderBook(symbol, snapshot.LastUpdateId)
 
-	peaky.Printf("%s : Depth Snapshot lastUpdateId: %d\n", SYMBOL, lastUpdateId)
-	peaky.Printf("%s : Starting events capturing\n", SYMBOL)
+	peaky.Printf("%s : Depth Snapshot lastUpdateId: %d\n", ob.Symbol, ob.LastUpdateId)
+	peaky.Printf("%s : Starting events capturing\n", ob.Symbol)
 
-	doneC, stopC, wsErr = binance.WsDepthServe(symbol, wsDepthHander, wsErrorHandler)
-	if wsErr != nil {
-		peaky.Fatalf("%s : Error launching WsDepthServe websocket: %v\n", SYMBOL, wsErr)
+	ob.doneC, ob.stopC, ob.wsErr = binance.WsDepthServe(symbol, ob.wsDepthHander, ob.wsErrorHandler)
+	if ob.wsErr != nil {
+		peaky.Fatalf("%s : Error launching WsDepthServe websocket: %v\n", ob.Symbol, ob.wsErr)
 	}
 
 	ticker := time.NewTicker(TICKERTIME)
 
-	go func() {
+	go func(ob *OrderBook) {
 		time.Sleep(RUNTIME)
-		stopC <- struct{}{}
-	}()
+		ob.stopC <- struct{}{}
+	}(ob)
 
-	go func() {
+	go func(ob *OrderBook) {
 		for {
 			select {
 			case <-ticker.C:
-				orderBook.displaySentiments()
-			case <-stopC:
+				ob.displaySentiments()
+			case <-ob.stopC:
 				ticker.Stop()
 				return
 			}
 		}
-	}()
+	}(ob)
 
-	<-doneC
+	<-ob.doneC
 
 	fmt.Fprintln(os.Stdout)
-	peaky.Printf("%s : Finished events capturing. Events processed: %d\n", SYMBOL, eventsCounter)
+	peaky.Printf("%s : Finished events capturing. Events processed: %d\n", ob.Symbol, ob.eventsCounter)
 }

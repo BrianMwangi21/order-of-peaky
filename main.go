@@ -1,13 +1,25 @@
 package main
 
 import (
+	"sync"
+
 	"github.com/BrianMwangi21/order-of-peaky.git/utils"
 )
 
 var (
-	SYMBOL = "BTCUSDT"
+	SYMBOLS = [...]string{"BTCUSDT", "ETHUSDT", "BNBUSDT"}
 )
 
 func main() {
-	utils.Begin(SYMBOL)
+	var wg sync.WaitGroup
+
+	for _, symbol := range SYMBOLS {
+		wg.Add(1)
+		go func(s string) {
+			defer wg.Done()
+			utils.Begin(s)
+		}(symbol)
+	}
+
+	wg.Wait()
 }

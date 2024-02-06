@@ -20,14 +20,37 @@ type DepthSnapshot struct {
 
 type OrderBook struct {
 	sync.RWMutex
-	Bids map[float64]float64
-	Asks map[float64]float64
+	Bids          map[float64]float64
+	Asks          map[float64]float64
+	Symbol        string
+	LastUpdateId  int64
+	doneC, stopC  chan struct{}
+	wsErr         error
+	eventsCounter int
 }
 
-func newOrderBook() *OrderBook {
+func newOrderBook(symbol string, lastUpdateId int64) *OrderBook {
 	return &OrderBook{
-		Bids: make(map[float64]float64),
-		Asks: make(map[float64]float64),
+		Bids:         make(map[float64]float64),
+		Asks:         make(map[float64]float64),
+		Symbol:       symbol,
+		LastUpdateId: lastUpdateId,
+	}
+}
+
+func (ob *OrderBook) wsDepthHander(event *binance.WsDepthEvent) {
+	if event.LastUpdateID <= ob.LastUpdateId {
+		return
+	}
+
+	ob.eventsCounter += 1
+	peaky.Printf("%s : Processing Event: %d, Bids: %d, Asks: %d\n", ob.Symbol, event.LastUpdateID, len(event.Bids), len(event.Asks))
+	ob.updateOrderBook(event)
+}
+
+func (ob *OrderBook) wsErrorHandler(err error) {
+	if err != nil {
+		peaky.Fatalf("%s : WsDepthServe error: %v", ob.Symbol, err)
 	}
 }
 
@@ -62,9 +85,9 @@ func (ob *OrderBook) displaySentiments() {
 	ob.RLock()
 	defer ob.RUnlock()
 
-	totalBids, totalAsks := orderBook.getTotalBidsAsks()
-	lowestAsk, highestBid, spread := orderBook.getSpread()
-	peaky.Printf("%s : Total Bids: %.4f, Total Asks: %.4f, Lowest Ask: %.4f, Highest Bid: %.4f, Spread: %.4f\n", SYMBOL, totalBids, totalAsks, lowestAsk, highestBid, spread)
+	totalBids, totalAsks := ob.getTotalBidsAsks()
+	lowestAsk, highestBid, spread := ob.getSpread()
+	peaky.Printf("%s : Total Bids: %.4f, Total Asks: %.4f, Lowest Ask: %.4f, Highest Bid: %.4f, Spread: %.4f\n", ob.Symbol, totalBids, totalAsks, lowestAsk, highestBid, spread)
 }
 
 func (ob *OrderBook) getTotalBidsAsks() (totalBids, totalAsks float64) {
@@ -111,27 +134,27 @@ func parsePriceLevel(pl []common.PriceLevel) (totalQuantity float64) {
 func parseToFloat(input string) (value float64) {
 	value, err := strconv.ParseFloat(input, 64)
 	if err != nil {
-		peaky.Fatalf("%s : Error parsing to float: %v", SYMBOL, err)
+		peaky.Fatalf("Error parsing to float: %v", err)
 	}
 	return value
 }
 
-func getDepthSnapshot() DepthSnapshot {
+func getDepthSnapshot(symbol string) DepthSnapshot {
 	var snapshot DepthSnapshot
-	resp, err := http.Get("https://api.binance.com/api/v3/depth?symbol=" + SYMBOL + "&limit=5000")
+	resp, err := http.Get("https://api.binance.com/api/v3/depth?symbol=" + symbol + "&limit=5000")
 	if err != nil {
-		peaky.Fatalf("%s : Error fetching snapshot from API: %v", SYMBOL, err)
+		peaky.Fatalf("%s : Error fetching snapshot from API: %v", symbol, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		peaky.Fatalf("%s : Error reading response body: %v", SYMBOL, err)
+		peaky.Fatalf("%s : Error reading response body: %v", symbol, err)
 	}
 
 	err = json.Unmarshal(body, &snapshot)
 	if err != nil {
-		peaky.Fatalf("%s : Error unmarshalling depth snapshot: %v", SYMBOL, err)
+		peaky.Fatalf("%s : Error unmarshalling depth snapshot: %v", symbol, err)
 	}
 
 	return snapshot
