@@ -17,27 +17,28 @@ var (
 	TICKERTIME = (30 * time.Second)
 )
 
+type OrderBook struct {
+	sync.RWMutex
+	Bids                      map[float64]float64
+	Asks                      map[float64]float64
+	Symbol                    string
+	SnapshotLastUpdateId      int64
+	doneC, stopC              chan struct{}
+	wsErr                     error
+	eventsCounter             int
+	previousEventLastUpdateId int64
+}
+
 func init() {
 	peaky = log.New(os.Stdout, "peaky:", log.LstdFlags)
 }
 
-type OrderBook struct {
-	sync.RWMutex
-	Bids          map[float64]float64
-	Asks          map[float64]float64
-	Symbol        string
-	LastUpdateId  int64
-	doneC, stopC  chan struct{}
-	wsErr         error
-	eventsCounter int
-}
-
 func newOrderBook(symbol string, lastUpdateId int64) *OrderBook {
 	return &OrderBook{
-		Bids:         make(map[float64]float64),
-		Asks:         make(map[float64]float64),
-		Symbol:       symbol,
-		LastUpdateId: lastUpdateId,
+		Bids:                 make(map[float64]float64),
+		Asks:                 make(map[float64]float64),
+		Symbol:               symbol,
+		SnapshotLastUpdateId: lastUpdateId,
 	}
 }
 
@@ -48,19 +49,46 @@ func (ob *OrderBook) wsErrorHandler(err error) {
 }
 
 func (ob *OrderBook) wsDepthHander(event *binance.WsDepthEvent) {
-	if event.LastUpdateID <= ob.LastUpdateId {
+	if !ob.isValidEvent(event) {
 		return
 	}
 
-	ob.eventsCounter += 1
-	peaky.Printf("%s : Processing Event: %d, Bids: %d, Asks: %d\n", ob.Symbol, event.LastUpdateID, len(event.Bids), len(event.Asks))
-	ob.updateOrderBook(event)
-}
-
-func (ob *OrderBook) updateOrderBook(event *binance.WsDepthEvent) {
 	ob.Lock()
 	defer ob.Unlock()
 
+	ob.eventsCounter += 1
+	ob.previousEventLastUpdateId = event.LastUpdateID
+
+	peaky.Printf("%s : Processing Event: F: %d, L: %d, Bids: %d, Asks: %d\n", ob.Symbol, event.FirstUpdateID, event.LastUpdateID, len(event.Bids), len(event.Asks))
+	ob.updateOrderBook(event)
+}
+
+func (ob *OrderBook) isValidEvent(event *binance.WsDepthEvent) bool {
+	// Guide : https://binance-docs.github.io/apidocs/delivery/en/#how-to-manage-a-local-order-book-correctly
+	// Don't process any event where u <= SnapshotLastUpdateId
+	if event.LastUpdateID <= ob.SnapshotLastUpdateId {
+		peaky.Printf("%s : Event not valid. Check u <= SnapshotLastUpdateId failed: %d, %d\n", ob.Symbol, event.LastUpdateID, ob.SnapshotLastUpdateId)
+		return false
+	}
+
+	// Event should also be such that U <= SnapshotLastUpdateId+1 and u >= SnapshotLastUpdateId+1
+	if !(event.FirstUpdateID <= ob.SnapshotLastUpdateId+1) && !(event.LastUpdateID >= ob.SnapshotLastUpdateId+1) {
+		peaky.Printf("%s : Event not valid. Check U <= SnapshotLastUpdateId+1 and u >= SnapshotLastUpdateId+1 failed: %d, %d, %d\n", ob.Symbol, event.FirstUpdateID, event.LastUpdateID, ob.SnapshotLastUpdateId+1)
+		return false
+	}
+
+	// Event's U should be equal to previous event's u+1
+	if event.FirstUpdateID != (ob.previousEventLastUpdateId + 1) {
+		ob.Lock()
+		ob.previousEventLastUpdateId = event.LastUpdateID
+		ob.Unlock()
+		return false
+	}
+
+	return true
+}
+
+func (ob *OrderBook) updateOrderBook(event *binance.WsDepthEvent) {
 	for _, bid := range event.Bids {
 		price := parseToFloat(bid.Price)
 		quantity := parseToFloat(bid.Quantity)
@@ -131,7 +159,7 @@ func Begin(symbol string) {
 	snapshot := getDepthSnapshot(symbol)
 	ob := newOrderBook(symbol, snapshot.LastUpdateId)
 
-	peaky.Printf("%s : Depth Snapshot lastUpdateId: %d\n", ob.Symbol, ob.LastUpdateId)
+	peaky.Printf("%s : Depth Snapshot lastUpdateId: %d\n", ob.Symbol, ob.SnapshotLastUpdateId)
 	peaky.Printf("%s : Starting events capturing\n", ob.Symbol)
 
 	ob.doneC, ob.stopC, ob.wsErr = binance.WsDepthServe(symbol, ob.wsDepthHander, ob.wsErrorHandler)
