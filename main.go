@@ -9,5 +9,5 @@ var (
 )
 
 func main() {
-	utils.ManageLocalOrderBook(SYMBOL)
+	utils.Begin(SYMBOL)
 }
