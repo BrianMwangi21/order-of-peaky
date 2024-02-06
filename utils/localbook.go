@@ -10,20 +10,20 @@ import (
 )
 
 var (
-	lastUpdateId                       int64
-	doneC, stopC                       chan struct{}
-	wsErr                              error
-	peaky                              *log.Logger
-	totalBidQuantity, totalAskQuantity float64
-	eventsCounter                      int
-	orderBook                          *OrderBook
-	SYMBOL                             string
-	RUNTIME                            = (2 * time.Minute)
+	lastUpdateId  int64
+	doneC, stopC  chan struct{}
+	wsErr         error
+	peaky         *log.Logger
+	eventsCounter int
+	orderBook     *OrderBook
+	SYMBOL        string
+	RUNTIME       = (2 * time.Minute)
+	TICKERTIME    = (15 * time.Second)
 )
 
 func init() {
 	orderBook = newOrderBook()
-	peaky = log.New(os.Stdout, "peaky:", log.LstdFlags|log.Lshortfile)
+	peaky = log.New(os.Stdout, "peaky:", log.LstdFlags)
 	peaky.Println("Logger initialized")
 }
 
@@ -55,9 +55,24 @@ func Begin(symbol string) {
 	if wsErr != nil {
 		peaky.Fatalf("%s : Error launching WsDepthServe websocket: %v\n", SYMBOL, wsErr)
 	}
+
+	ticker := time.NewTicker(TICKERTIME)
+
 	go func() {
 		time.Sleep(RUNTIME)
 		stopC <- struct{}{}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				orderBook.displaySentiments()
+			case <-stopC:
+				ticker.Stop()
+				return
+			}
+		}
 	}()
 
 	<-doneC

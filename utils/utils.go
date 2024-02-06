@@ -3,8 +3,10 @@ package utils
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/adshao/go-binance/v2"
 	"github.com/adshao/go-binance/v2/common"
@@ -17,6 +19,7 @@ type DepthSnapshot struct {
 }
 
 type OrderBook struct {
+	sync.RWMutex
 	Bids map[float64]float64
 	Asks map[float64]float64
 }
@@ -29,10 +32,9 @@ func newOrderBook() *OrderBook {
 }
 
 func (ob *OrderBook) updateOrderBook(event *binance.WsDepthEvent) {
-	totalBidQuantity += parsePriceLevel(event.Bids)
-	totalAskQuantity += parsePriceLevel(event.Asks)
+	ob.Lock()
+	defer ob.Unlock()
 
-	// Update Bids
 	for _, bid := range event.Bids {
 		price := parseToFloat(bid.Price)
 		quantity := parseToFloat(bid.Quantity)
@@ -44,7 +46,6 @@ func (ob *OrderBook) updateOrderBook(event *binance.WsDepthEvent) {
 		}
 	}
 
-	// Update Asks
 	for _, ask := range event.Asks {
 		price := parseToFloat(ask.Price)
 		quantity := parseToFloat(ask.Quantity)
@@ -55,6 +56,49 @@ func (ob *OrderBook) updateOrderBook(event *binance.WsDepthEvent) {
 			ob.Asks[price] = quantity
 		}
 	}
+}
+
+func (ob *OrderBook) displaySentiments() {
+	ob.RLock()
+	defer ob.RUnlock()
+
+	totalBids, totalAsks := orderBook.getTotalBidsAsks()
+	lowestAsk, highestBid, spread := orderBook.getSpread()
+	peaky.Printf("%s : Total Bids: %.4f, Total Asks: %.4f, Lowest Ask: %.4f, Highest Bid: %.4f, Spread: %.4f\n", SYMBOL, totalBids, totalAsks, lowestAsk, highestBid, spread)
+}
+
+func (ob *OrderBook) getTotalBidsAsks() (totalBids, totalAsks float64) {
+	for _, quantity := range ob.Bids {
+		totalBids += quantity
+	}
+	for _, quantity := range ob.Asks {
+		totalAsks += quantity
+	}
+
+	return totalBids, totalAsks
+}
+
+func (ob *OrderBook) getSpread() (lowestAsk, highestBid, spread float64) {
+	if len(ob.Asks) == 0 || len(ob.Bids) == 0 {
+		return math.NaN(), math.NaN(), math.NaN()
+	}
+
+	lowestAsk = math.Inf(1)
+	highestBid = math.Inf(-1)
+
+	for price := range ob.Asks {
+		if price < lowestAsk {
+			lowestAsk = price
+		}
+	}
+	for price := range ob.Bids {
+		if price > highestBid {
+			highestBid = price
+		}
+	}
+
+	spread = lowestAsk - highestBid
+	return lowestAsk, highestBid, spread
 }
 
 func parsePriceLevel(pl []common.PriceLevel) (totalQuantity float64) {
