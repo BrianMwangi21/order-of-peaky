@@ -23,8 +23,9 @@ var (
 	orderBook             []*binance.WsDepthEvent
 	doneC, stopC          chan struct{}
 	wsErr                 error
-	ORDER_BOOK_SIZE_LIMIT = 100
 	peaky                 *log.Logger
+	ORDER_BOOK_SIZE_LIMIT = 50
+	SYMBOL                string
 )
 
 func init() {
@@ -32,22 +33,22 @@ func init() {
 	peaky.Println("Logger initialized")
 }
 
-func getDepthSnapshot(symbol string) DepthSnapshot {
+func getDepthSnapshot() DepthSnapshot {
 	var snapshot DepthSnapshot
-	resp, err := http.Get("https://api.binance.com/api/v3/depth?symbol=" + symbol + "&limit=5000")
+	resp, err := http.Get("https://api.binance.com/api/v3/depth?symbol=" + SYMBOL + "&limit=5000")
 	if err != nil {
-		peaky.Fatalf("Error fetching snapshot from API: %v", err)
+		peaky.Fatalf("%s : Error fetching snapshot from API: %v", SYMBOL, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		peaky.Fatalf("Error reading response body: %v", err)
+		peaky.Fatalf("%s : Error reading response body: %v", SYMBOL, err)
 	}
 
 	err = json.Unmarshal(body, &snapshot)
 	if err != nil {
-		peaky.Fatalf("Error unmarshalling depth snapshot: %v", err)
+		peaky.Fatalf("%s : Error unmarshalling depth snapshot: %v", SYMBOL, err)
 	}
 
 	return snapshot
@@ -58,13 +59,11 @@ func wsDepthHander(event *binance.WsDepthEvent) {
 	defer orderBookLock.Unlock()
 
 	if event.LastUpdateID <= lastUpdateId {
-		peaky.Println("Event received and ignored:", event.LastUpdateID, len(event.Bids), len(event.Asks))
 		return
 	}
 
 	if len(orderBook) < ORDER_BOOK_SIZE_LIMIT {
 		orderBook = append(orderBook, event)
-		peaky.Println("Event received and processed:", event.LastUpdateID, len(event.Bids), len(event.Asks))
 	} else {
 		stopC <- struct{}{}
 	}
@@ -72,24 +71,26 @@ func wsDepthHander(event *binance.WsDepthEvent) {
 
 func wsErrorHandler(err error) {
 	if err != nil {
-		peaky.Fatalf("WsDepthServe error: %v", err)
+		peaky.Fatalf("%s : WsDepthServe error: %v", SYMBOL, err)
 	}
 }
 
 func ManageLocalOrderBook(symbol string) {
-	snapshot := getDepthSnapshot(symbol)
+	SYMBOL = symbol
+	snapshot := getDepthSnapshot()
 	orderBookLock.Lock()
 	lastUpdateId = snapshot.LastUpdateId
 	orderBookLock.Unlock()
 
-	peaky.Println("Depth Snapshot lastUpdateId:", lastUpdateId)
+	peaky.Printf("%s : Starting events buffering", SYMBOL)
+	peaky.Printf("%s : Depth Snapshot lastUpdateId: %d\n", SYMBOL, lastUpdateId)
 
 	doneC, stopC, wsErr = binance.WsDepthServe(symbol, wsDepthHander, wsErrorHandler)
 	if wsErr != nil {
-		peaky.Fatalf("Error launching WsDepthServe websocket: %v", wsErr)
+		peaky.Fatalf("%s : Error launching WsDepthServe websocket: %v\n", SYMBOL, wsErr)
 	}
 
 	<-doneC
 
-	peaky.Println("Orderbook length", len(orderBook))
+	peaky.Printf("%s : Finished events buffering. Events stored: %d\n", SYMBOL, len(orderBook))
 }
