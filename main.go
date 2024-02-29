@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	SYMBOLS = [...]string{"BTCUSDT", "ETHUSDT", "UMAUSDT", "PEOPLEUSDT"}
+	SYMBOLS = [...]string{"BTCUSDT", "ETHUSDT"}
 )
 
 func main() {
